@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Navigate, Route, Routes } from 'react-router-dom'
 import {
   ChevronDown,
   ClipboardList,
@@ -23,6 +24,12 @@ import {
 import BpmnEditor from './components/BpmnEditor'
 import CmmnEditor from './components/CmmnEditor'
 import FlowEditor from './components/FlowEditor'
+import { RequireAuth } from './components/RequireAuth'
+import { Login } from './pages/Login'
+import { Register } from './pages/Register'
+import { Pricing } from './pages/Pricing'
+import { Account } from './pages/Account'
+import { EditorGatingProvider, useEditorGating } from './lib/editor-gating'
 import type { EditorHandle } from './lib/editorHandle'
 import {
   DOC_TYPES,
@@ -55,9 +62,17 @@ const NEW_MENU: { type: DocType; icon: React.ReactNode; description: string }[] 
 
 let toastCounter = 0
 
-export default function App() {
+/* ------------------------------------------------------------------ *
+ * EditorApp
+ * ------------------------------------------------------------------ *
+ * Qui vive TUTTA la logica dell'editor, identica a prima.
+ * L'unica aggiunta è `const gate = useEditorGating()` e tre chiamate
+ * a `gate(...)` nei punti protetti (New, Open di doc avanzati, Export PDF).
+ * ------------------------------------------------------------------ */
+function EditorApp() {
   const handleRef = useRef<EditorHandle | null>(null)
   const fileHandleRef = useRef<FileSystemFileHandle | null>(null)
+  const gate = useEditorGating()
 
   const [docType, setDocType] = useState<DocType>('bpmn')
   const [docKey, setDocKey] = useState(1)
@@ -154,11 +169,13 @@ export default function App() {
   const handleNew = useCallback(
     (type: DocType) => {
       setOpenMenu(null)
+      // 🔒 GATING: blocca i tipi di documento non inclusi nel piano
+      if (!gate(type)) return
       if (!confirmDiscard()) return
       loadDocument(type, DOC_TYPES[type].newContent(), DOC_TYPES[type].defaultFileName, null)
       report(`New ${DOC_TYPES[type].label.toLowerCase()} created`)
     },
-    [confirmDiscard, loadDocument, report],
+    [confirmDiscard, gate, loadDocument, report],
   )
 
   const handleOpen = useCallback(async () => {
@@ -171,12 +188,14 @@ export default function App() {
         reportError('Failed to open file', new Error('Unrecognized document format'))
         return
       }
+      // 🔒 GATING: blocca l'apertura di documenti di tipo protetto
+      if (!gate(type)) return
       loadDocument(type, file.content, file.name, file.handle)
       report(`Opened ${file.name}`)
     } catch (err) {
       reportError('Failed to open file', err)
     }
-  }, [confirmDiscard, loadDocument, report, reportError])
+  }, [confirmDiscard, gate, loadDocument, report, reportError])
 
   const handleSaveAs = useCallback(async () => {
     try {
@@ -231,6 +250,8 @@ export default function App() {
   const handleExport = useCallback(
     async (format: 'svg' | 'png' | 'pdf') => {
       setOpenMenu(null)
+      // 🔒 GATING: il PDF è protetto; SVG e PNG no (per ora).
+      if (!gate(format)) return
       try {
         const svg = await handleRef.current!.getSvg()
         const baseName = stripKnownExtension(fileName)
@@ -242,7 +263,7 @@ export default function App() {
         reportError(`Failed to export ${format.toUpperCase()}`, err)
       }
     },
-    [fileName, report, reportError],
+    [fileName, gate, report, reportError],
   )
 
   // Keyboard shortcuts: Ctrl+S save, Ctrl+Shift+S save as, Ctrl+O open
@@ -506,5 +527,47 @@ export default function App() {
         ))}
       </div>
     </div>
+  )
+}
+
+/* ------------------------------------------------------------------ *
+ * App
+ * ------------------------------------------------------------------ *
+ * Nuovo componente di default: gestisce solo le route e i provider
+ * di livello applicativo. L'editor vive in EditorApp.
+ * ------------------------------------------------------------------ */
+export default function App() {
+  return (
+    <Routes>
+      {/* Route pubbliche */}
+      <Route path="/login" element={<Login />} />
+      <Route path="/register" element={<Register />} />
+      <Route path="/pricing" element={<Pricing />} />
+
+      {/* Route protette */}
+      <Route
+        path="/account"
+        element={
+          <RequireAuth>
+            <Account />
+          </RequireAuth>
+        }
+      />
+
+      {/* Editor: protetto + gating dei piani */}
+      <Route
+        path="/"
+        element={
+          <RequireAuth>
+            <EditorGatingProvider>
+              <EditorApp />
+            </EditorGatingProvider>
+          </RequireAuth>
+        }
+      />
+
+      {/* Fallback */}
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
